@@ -60,6 +60,28 @@ def fetch_pending_invoices() -> list[dict]:
     return result.data
 
 
+def fetch_fallback_pending_jobs() -> list[dict]:
+    """Fetch jobs with status 'fallback_pending' for local worker processing."""
+    sb = _get_client()
+    result = sb.table("invoices_queue") \
+        .select("*") \
+        .eq("status", "fallback_pending") \
+        .order("created_at", desc=False) \
+        .execute()
+    return result.data
+
+
+def fetch_pending_count_for_batch(batch_id: int) -> int:
+    """Return the count of pending queue items for a specific batch (DB-level filter)."""
+    sb = _get_client()
+    result = sb.table("invoices_queue") \
+        .select("id") \
+        .eq("status", "pending") \
+        .eq("batch_id", batch_id) \
+        .execute()
+    return len(result.data)
+
+
 def mark_processed(invoice_id: str) -> dict:
     sb = _get_client()
     result = sb.table("invoices_queue").update({
@@ -99,3 +121,32 @@ def fetch_billing_logs(batch_id: Optional[int] = None, limit: int = 100) -> list
     query = query.limit(limit)
     result = query.execute()
     return result.data
+
+
+def create_job(filename: str, file_bytes: bytes, batch_id: int) -> dict:
+    """Create a job record in the queue with status 'pending'. Returns the created record."""
+    return push_to_queue(filename, file_bytes, batch_id)
+
+
+def update_job_status(job_id: str, status: str) -> dict:
+    """Update a job's status. Sets processed_at for terminal statuses."""
+    sb = _get_client()
+    update_data: dict = {"status": status}
+    if status in ("cloud_completed", "fallback_completed", "fallback_failed"):
+        update_data["processed_at"] = datetime.now(timezone.utc).isoformat()
+    result = sb.table("invoices_queue").update(update_data).eq("id", job_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def fetch_batch_job_summary(batch_id: int) -> dict:
+    """Return status counts for a batch, e.g. {'cloud_completed': 3, 'fallback_pending': 2}."""
+    sb = _get_client()
+    result = sb.table("invoices_queue") \
+        .select("status") \
+        .eq("batch_id", batch_id) \
+        .execute()
+    counts: dict = {}
+    for row in result.data:
+        s = row.get("status", "unknown")
+        counts[s] = counts.get(s, 0) + 1
+    return counts
