@@ -507,7 +507,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    if st.button("Start New Batch", type="primary", width="stretch"):
+    if st.button("Start New Batch", type="primary"):
         st.session_state.uploader_key_counter += 1
         _reset_batch_state()
         st.session_state.batch_status = "New batch started — upload files above."
@@ -845,7 +845,6 @@ with st.form("upload_form", clear_on_submit=False):
     submit_clicked = st.form_submit_button(
         "Process Files",
         type="primary",
-        width="stretch",
     )
 
 st.markdown('</div>', unsafe_allow_html=True)
@@ -899,7 +898,7 @@ if st.session_state.processing_animation and st.session_state.batch_files:
         _cat_src = "https://assets2.lottiefiles.com/packages/lf20_9xLBhO.json"
     st.html(
         f"""
-        <div style="display:flex;justify-content:center;padding:0.5rem 0;">
+        <div style="display:flex;justify-content:center;padding:0.5rem 0;height:240px;">
           <lottie-player
             src="{_cat_src}"
             background="transparent"
@@ -910,7 +909,6 @@ if st.session_state.processing_animation and st.session_state.batch_files:
         </div>
         <script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>
         """,
-        height=240,
     )
 
     # ── Now do the heavy processing ──
@@ -1124,7 +1122,7 @@ st.markdown(f"""
 # ── Toolbar row ──
 tb1, tb2, tb3, tb4 = st.columns([1, 1, 1, 1])
 with tb1:
-    refresh_clicked = st.button("Refresh Data", key="refresh_btn", width="stretch")
+    refresh_clicked = st.button("Refresh Data", key="refresh_btn")
 with tb2:
     pass
 with tb3:
@@ -1149,7 +1147,6 @@ else:
     editor_key = f"review_editor_{active_batch_id}"
     edited = st.data_editor(
         st.session_state.edited_df,
-        width="stretch",
         num_rows="dynamic",
         key=editor_key,
     )
@@ -1179,7 +1176,7 @@ else:
             label_visibility="collapsed",
             placeholder="Select rows…",
         )
-        if rows_to_delete and st.button("Delete Rows", key="delete_btn", type="secondary", width="stretch"):
+        if rows_to_delete and st.button("Delete Rows", key="delete_btn", type="secondary"):
             st.session_state.edited_df = (
                 st.session_state.edited_df.drop(rows_to_delete).reset_index(drop=True)
             )
@@ -1206,19 +1203,18 @@ else:
             data=excel_data,
             file_name=filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width="stretch",
         )
 
     # ── Email ──
     with tb4:
-        with st.popover("Send Email", width="stretch"):
+        with st.popover("Send Email"):
             email_recipient = st.text_input(
                 "Recipient",
                 key="email_recipient",
                 placeholder="user@example.com",
                 label_visibility="collapsed",
             )
-            if st.button("Send", key="send_email_btn", width="stretch"):
+            if st.button("Send", key="send_email_btn"):
                 if not email_recipient or "@" not in email_recipient:
                     st.error("Enter a valid email address.")
                 elif not get_secret("SMTP_HOST"):
