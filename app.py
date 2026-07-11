@@ -1,5 +1,6 @@
 from datetime import datetime
 import base64
+import os
 import time
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -12,8 +13,17 @@ import pandas as pd
 import httpx
 import io
 
-import config
 import db_buffer
+
+
+def get_secret(key):
+    """Access secrets from Streamlit Cloud Secrets, fallback to OS env vars."""
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.getenv(key, "")
 
 DATA_DIR = Path("data")
 PENDING = DATA_DIR / "pending_docs"
@@ -288,8 +298,12 @@ def _extract_cloud(filepath: Path) -> tuple[list[dict], str, dict]:
     with open(filepath, "rb") as f:
         image_b64 = base64.b64encode(f.read()).decode("utf-8")
 
+    api_model = get_secret("API_MODEL")
+    api_key = get_secret("API_KEY")
+    api_base_url = get_secret("API_BASE_URL")
+
     payload = {
-        "model": config.API_MODEL,
+        "model": api_model,
         "messages": [
             {
                 "role": "user",
@@ -301,11 +315,11 @@ def _extract_cloud(filepath: Path) -> tuple[list[dict], str, dict]:
         ],
     }
     headers = {
-        "Authorization": f"Bearer {config.API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     with httpx.Client(timeout=120) as client:
-        resp = client.post(f"{config.API_BASE_URL}/chat/completions", json=payload, headers=headers)
+        resp = client.post(f"{api_base_url}/chat/completions", json=payload, headers=headers)
         resp.raise_for_status()
         resp_json = resp.json()
         raw = resp_json["choices"][0]["message"]["content"]
@@ -324,7 +338,7 @@ def _extract_cloud(filepath: Path) -> tuple[list[dict], str, dict]:
     if not rows:
         raise ValueError("Cloud extraction returned no line items")
 
-    model_label = f"api:{config.API_MODEL}"
+    model_label = f"api:{api_model}"
     for r in rows:
         r["model_used"] = model_label
         r["parse_status"] = status
@@ -462,15 +476,21 @@ def send_email_with_attachment(
     attachment_filename: str,
 ) -> str:
     """Send an email with an Excel attachment via SMTP. Returns status message."""
-    if not config.SMTP_HOST:
+    smtp_host = get_secret("SMTP_HOST")
+    smtp_port = int(get_secret("SMTP_PORT") or 587)
+    smtp_user = get_secret("SMTP_USER")
+    smtp_pass = get_secret("SMTP_PASS")
+    smtp_from = get_secret("SMTP_FROM")
+
+    if not smtp_host:
         return "error: SMTP_HOST is not configured."
-    if not config.SMTP_USER or not config.SMTP_PASS:
+    if not smtp_user or not smtp_pass:
         return "error: SMTP credentials (SMTP_USER, SMTP_PASS) are not configured."
-    if not config.SMTP_FROM:
+    if not smtp_from:
         return "error: SMTP_FROM sender address is not configured."
 
     msg = MIMEMultipart()
-    msg["From"] = config.SMTP_FROM
+    msg["From"] = smtp_from
     msg["To"] = recipient
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
@@ -485,18 +505,18 @@ def send_email_with_attachment(
     msg.attach(part)
 
     try:
-        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=30) as server:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
             server.ehlo()
-            if config.SMTP_PORT != 465:
+            if smtp_port != 465:
                 server.starttls()
                 server.ehlo()
-            server.login(config.SMTP_USER, config.SMTP_PASS)
-            server.sendmail(config.SMTP_FROM, [recipient], msg.as_string())
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_from, [recipient], msg.as_string())
         return "ok"
     except smtplib.SMTPAuthenticationError:
         return "error: SMTP authentication failed — check SMTP_USER and SMTP_PASS."
     except smtplib.SMTPConnectError:
-        return f"error: Could not connect to {config.SMTP_HOST}:{config.SMTP_PORT}."
+        return f"error: Could not connect to {smtp_host}:{smtp_port}."
     except smtplib.SMTPException as exc:
         return f"error: SMTP error — {exc}"
     except OSError as exc:
@@ -831,7 +851,7 @@ else:
             if st.button("Send", key="send_email_btn", use_container_width=True):
                 if not email_recipient or "@" not in email_recipient:
                     st.error("Enter a valid email address.")
-                elif not config.SMTP_HOST:
+                elif not get_secret("SMTP_HOST"):
                     st.error("SMTP not configured.")
                 else:
                     with st.spinner("Sending…"):
