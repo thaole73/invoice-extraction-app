@@ -1,8 +1,9 @@
-streamlit
-pandas
-watchdog
-ollama
-openpyxl
-python-dotenv
-httpx
-supabase
+streamlit==1.45.1
+pandas==2.2.3
+pyarrow==17.0.0
+watchdog==4.0.2
+ollama==0.4.8
+openpyxl==3.1.5
+python-dotenv==1.1.0
+httpx==0.28.1
+supabase==2.15.2
