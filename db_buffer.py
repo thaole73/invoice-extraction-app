@@ -7,18 +7,28 @@ from supabase import create_client, Client
 
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-
 _client: Optional[Client] = None
+
+
+def get_secret(key):
+    """Access secrets from Streamlit Cloud Secrets, fallback to OS env vars."""
+    try:
+        import streamlit as st
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.getenv(key, "")
 
 
 def _get_client() -> Client:
     global _client
     if _client is None:
-        if not SUPABASE_URL or not SUPABASE_KEY:
-            raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set in the environment.")
-        _client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        url = get_secret("SUPABASE_URL")
+        key = get_secret("SUPABASE_KEY")
+        if not url or not key:
+            raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set in the environment or Streamlit secrets.")
+        _client = create_client(url, key)
     return _client
 
 
