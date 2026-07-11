@@ -9,7 +9,6 @@ from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
 import streamlit as st
-import streamlit.components.v1 as components
 from pathlib import Path
 import pandas as pd
 import httpx
@@ -458,7 +457,7 @@ _batch = _read_batch_id()
 BANNER_PATH = Path("assets") / "banner.png"
 if BANNER_PATH.exists():
     st.markdown('<div class="banner-wrapper">', unsafe_allow_html=True)
-    st.image(str(BANNER_PATH), width="stretch")
+    st.image(str(BANNER_PATH), use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 else:
     # Fallback: no banner image, just show the header below
@@ -898,7 +897,7 @@ if st.session_state.processing_animation and st.session_state.batch_files:
         _cat_src = f"data:application/json;base64,{_cat_data}"
     else:
         _cat_src = "https://assets2.lottiefiles.com/packages/lf20_9xLBhO.json"
-    components.html(
+    st.html(
         f"""
         <div style="display:flex;justify-content:center;padding:0.5rem 0;">
           <lottie-player
