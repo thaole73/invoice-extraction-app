@@ -1,5 +1,6 @@
 from datetime import datetime
 import base64
+import json
 import os
 import shutil
 import time
@@ -9,6 +10,7 @@ from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
 import streamlit as st
+from streamlit_lottie import st_lottie
 from pathlib import Path
 import pandas as pd
 import httpx
@@ -26,6 +28,13 @@ def get_secret(key):
         pass
     return os.getenv(key, "")
 
+
+def load_lottie_file(filepath: Path):
+    """Load and parse a Lottie JSON file into a Python dict."""
+    if not filepath.exists():
+        return None
+    with open(filepath, "r") as f:
+        return json.load(f)
 
 
 DATA_DIR = Path("data")
@@ -890,26 +899,11 @@ if st.session_state.processing_animation and st.session_state.batch_files:
         unsafe_allow_html=True,
     )
     _cat_anim_path = Path("assets") / "cat_animation.json"
-    if _cat_anim_path.exists():
-        import base64 as _b64
-        _cat_data = _b64.b64encode(_cat_anim_path.read_bytes()).decode()
-        _cat_src = f"data:application/json;base64,{_cat_data}"
+    lottie_json = load_lottie_file(_cat_anim_path)
+    if lottie_json:
+        st_lottie(lottie_json, height=200, key="cat_processing_anim")
     else:
-        _cat_src = "https://assets2.lottiefiles.com/packages/lf20_9xLBhO.json"
-    st.html(
-        f"""
-        <div style="display:flex;justify-content:center;padding:0.5rem 0;height:240px;">
-          <lottie-player
-            src="{_cat_src}"
-            background="transparent"
-            speed="1"
-            style="width:200px;height:200px;"
-            loop autoplay>
-          </lottie-player>
-        </div>
-        <script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>
-        """,
-    )
+        st.spinner("Processing files... please wait!")
 
     # ── Now do the heavy processing ──
     saved = [
@@ -1230,6 +1224,19 @@ else:
                         )
                     if result == "ok":
                         st.success(f"Sent to {email_recipient}")
+                        try:
+                            OUTPUT_CSV.write_text("")
+                        except Exception:
+                            pass
+                        st.session_state.uploader_key_counter += 1
+                        _reset_batch_state()
+                        st.session_state.batch_status = "Email sent — upload new files above."
+                        if "batch_pending_start" in st.session_state:
+                            del st.session_state["batch_pending_start"]
+                        new_batch_id = st.session_state.active_batch_id + 1
+                        st.session_state.active_batch_id = new_batch_id
+                        BATCH_ID_FILE.write_text(str(new_batch_id))
+                        st.cache_data.clear()
                     else:
                         st.error(result)
 
