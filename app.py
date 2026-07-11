@@ -64,6 +64,9 @@ NEW_BATCH_COLUMNS = [
 for d in [PENDING, COMPLETED, FAILED, BILLING_LOGS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
+MAX_BATCH_FILES = 10
+MAX_FILE_MB = 15
+
 
 def _save_billing_local(
     batch_id: int,
@@ -86,9 +89,9 @@ def _save_billing_local(
         "processing_time": processing_time,
     }
     billing_csv = BILLING_LOGS_DIR / "billing_logs.csv"
-    df = pd.read_csv(billing_csv) if billing_csv.exists() else pd.DataFrame(columns=BILLING_CSV_COLUMNS)
-    df.loc[len(df)] = row
-    df.to_csv(billing_csv, index=False)
+    write_header = not billing_csv.exists() or billing_csv.stat().st_size == 0
+    df = pd.DataFrame([row])
+    df.to_csv(billing_csv, mode="a", header=write_header, index=False)
 
 
 def _read_batch_id() -> int:
@@ -455,7 +458,7 @@ _batch = _read_batch_id()
 BANNER_PATH = Path("assets") / "banner.png"
 if BANNER_PATH.exists():
     st.markdown('<div class="banner-wrapper">', unsafe_allow_html=True)
-    st.image(str(BANNER_PATH), use_container_width=True)
+    st.image(str(BANNER_PATH), width="stretch")
     st.markdown('</div>', unsafe_allow_html=True)
 else:
     # Fallback: no banner image, just show the header below
@@ -580,6 +583,57 @@ def _extract_cloud(filepath: Path) -> tuple[list[dict], str, dict]:
         raise ValueError(f"Failed to parse cloud response: {raw[:200]}")
 
     rows = _flatten_docs(parsed, filepath.name)
+    if not rows:
+        raise ValueError("Cloud extraction returned no line items")
+
+    model_label = f"api:{api_model}"
+    for r in rows:
+        r["model_used"] = model_label
+        r["parse_status"] = status
+    return rows, model_label, usage_info
+
+
+def _extract_cloud_from_bytes(file_bytes: bytes, filename: str) -> tuple[list[dict], str, dict]:
+    """Try Gemini API extraction from pre-read bytes. Avoids re-reading from disk."""
+    image_b64 = base64.b64encode(file_bytes).decode("utf-8")
+
+    api_model = get_secret("API_MODEL")
+    api_key = get_secret("API_KEY")
+    api_base_url = get_secret("API_BASE_URL")
+
+    payload = {
+        "model": api_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _CLOUD_PROMPT},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                ],
+            }
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    with httpx.Client(timeout=120) as client:
+        resp = client.post(f"{api_base_url}/chat/completions", json=payload, headers=headers)
+        resp.raise_for_status()
+        resp_json = resp.json()
+        raw = resp_json["choices"][0]["message"]["content"]
+
+    usage = resp_json.get("usage", {})
+    usage_info = {
+        "tokens_in": usage.get("prompt_tokens", 0),
+        "tokens_out": usage.get("completion_tokens", 0),
+    }
+
+    parsed, status = _parse_json(raw)
+    if parsed is None:
+        raise ValueError(f"Failed to parse cloud response: {raw[:200]}")
+
+    rows = _flatten_docs(parsed, filename)
     if not rows:
         raise ValueError("Cloud extraction returned no line items")
 
@@ -774,7 +828,8 @@ def send_email_with_attachment(
 st.markdown('<div class="upload-section">', unsafe_allow_html=True)
 st.markdown('<div class="dash-card-header">Upload Invoices</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="upload-help">Drop JPEG or PNG invoice images below, then click <strong>Process Files</strong> to start extraction.</div>',
+    f'<div class="upload-help">Drop JPEG or PNG invoice images below, then click <strong>Process Files</strong> to start extraction. '
+    f'(Max {MAX_BATCH_FILES} files, {MAX_FILE_MB} MB each)</div>',
     unsafe_allow_html=True,
 )
 
@@ -791,7 +846,7 @@ with st.form("upload_form", clear_on_submit=False):
     submit_clicked = st.form_submit_button(
         "Process Files",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     )
 
 st.markdown('</div>', unsafe_allow_html=True)
@@ -800,21 +855,28 @@ st.markdown('</div>', unsafe_allow_html=True)
 # Handle form submission — Phase 1: save files, trigger animation, then rerun
 # ---------------------------------------------------------------------------
 if submit_clicked and uploaded_files:
-    saved = []
-    for f in uploaded_files:
-        if f.name in st.session_state.processed_files:
-            continue
-        dest = PENDING / f.name
-        with open(dest, "wb") as buf:
-            buf.write(f.getbuffer())
-        saved.append(f.name)
-        st.session_state.processed_files.add(f.name)
+    new_files = [f for f in uploaded_files if f.name not in st.session_state.processed_files]
+    if len(new_files) > MAX_BATCH_FILES:
+        st.error(f"Too many files. Maximum is {MAX_BATCH_FILES} per batch. You selected {len(new_files)}.")
+    else:
+        oversized = [f for f in new_files if f.size > MAX_FILE_MB * 1024 * 1024]
+        if oversized:
+            names = ", ".join(f.name for f in oversized)
+            st.error(f"File(s) exceed {MAX_FILE_MB} MB limit: {names}")
+        else:
+            saved = []
+            for f in new_files:
+                dest = PENDING / f.name
+                with open(dest, "wb") as buf:
+                    buf.write(f.getbuffer())
+                saved.append(f.name)
+                st.session_state.processed_files.add(f.name)
 
-    if saved:
-        st.session_state.batch_files = [f.name for f in uploaded_files]
-        st.session_state.batch_total = len(uploaded_files)
-        st.session_state.processing_animation = True
-        st.rerun()
+            if saved:
+                st.session_state.batch_files = [f.name for f in uploaded_files]
+                st.session_state.batch_total = len(uploaded_files)
+                st.session_state.processing_animation = True
+                st.rerun()
 
 # ---------------------------------------------------------------------------
 # Phase 2: animation render + processing
@@ -864,69 +926,56 @@ if st.session_state.processing_animation and st.session_state.batch_files:
         cloud_ok = 0
         cloud_failed = 0
         fallback_files = []
+        all_rows = []
+        billing_records = []
 
         for name in saved:
             filepath = PENDING / name
-            job_id = None
+
             try:
-                job = db_buffer.create_job(name, filepath.read_bytes(), batch_id)
-                job_id = job.get("id")
+                file_bytes = filepath.read_bytes()
             except Exception:
-                pass
+                cloud_failed += 1
+                fallback_files.append(name)
+                continue
 
             try:
                 t0 = time.perf_counter()
-                rows, model_label, usage_info = _extract_cloud(filepath)
+                rows, model_label, usage_info = _extract_cloud_from_bytes(file_bytes, filepath.name)
                 elapsed = round(time.perf_counter() - t0, 3)
 
                 for r in rows:
                     r["batch_id"] = batch_id
                     r["processing_time_seconds"] = elapsed
+                all_rows.extend(rows)
 
-                df = pd.read_csv(OUTPUT_CSV) if OUTPUT_CSV.exists() else pd.DataFrame(columns=NEW_BATCH_COLUMNS)
-                for r in rows:
-                    df.loc[len(df)] = r
-                df.to_csv(OUTPUT_CSV, index=False)
-
-                if job_id:
-                    try:
-                        db_buffer.update_job_status(job_id, "cloud_completed")
-                    except Exception:
-                        pass
-
-                try:
-                    db_buffer.log_billing(
-                        batch_id=batch_id, model_used=model_label,
-                        tokens_in=usage_info.get("tokens_in", 0), tokens_out=usage_info.get("tokens_out", 0),
-                        processing_time=elapsed, filename=name, status="success",
-                    )
-                except Exception:
-                    pass
-                _save_billing_local(
-                    batch_id=batch_id, filename=name, status="success",
-                    model_used=model_label, tokens_in=usage_info.get("tokens_in", 0),
-                    tokens_out=usage_info.get("tokens_out", 0), processing_time=elapsed,
-                )
+                billing_records.append({
+                    "batch_id": batch_id, "filename": name, "status": "success",
+                    "model_used": model_label,
+                    "tokens_in": usage_info.get("tokens_in", 0),
+                    "tokens_out": usage_info.get("tokens_out", 0),
+                    "processing_time": elapsed,
+                })
 
                 cloud_ok += 1
             except Exception as exc:
+                job_id = None
+                try:
+                    job = db_buffer.create_job(name, file_bytes, batch_id)
+                    job_id = job.get("id")
+                except Exception:
+                    pass
                 if job_id:
                     try:
                         db_buffer.update_job_status(job_id, "fallback_pending")
                     except Exception:
                         pass
-                try:
-                    db_buffer.log_billing(
-                        batch_id=batch_id, model_used="fallback_queue",
-                        tokens_in=0, tokens_out=0, processing_time=0.0,
-                        filename=name, status="queued",
-                    )
-                except Exception:
-                    pass
-                _save_billing_local(
-                    batch_id=batch_id, filename=name, status="queued",
-                    model_used="fallback_queue", tokens_in=0, tokens_out=0, processing_time=0.0,
-                )
+
+                billing_records.append({
+                    "batch_id": batch_id, "filename": name, "status": "queued",
+                    "model_used": "fallback_queue",
+                    "tokens_in": 0, "tokens_out": 0, "processing_time": 0.0,
+                })
                 fallback_files.append(name)
                 cloud_failed += 1
 
@@ -934,6 +983,25 @@ if st.session_state.processing_animation and st.session_state.batch_files:
                 shutil.move(str(filepath), str(COMPLETED / filepath.name))
             except Exception:
                 pass
+
+        if all_rows:
+            try:
+                if OUTPUT_CSV.exists():
+                    df = pd.read_csv(OUTPUT_CSV)
+                else:
+                    df = pd.DataFrame(columns=NEW_BATCH_COLUMNS)
+                new_df = pd.DataFrame(all_rows)
+                df = pd.concat([df, new_df], ignore_index=True)
+                df.to_csv(OUTPUT_CSV, index=False)
+            except Exception:
+                pass
+
+        for rec in billing_records:
+            try:
+                db_buffer.log_billing(**rec)
+            except Exception:
+                pass
+            _save_billing_local(**rec)
 
         if fallback_files:
             st.warning(
@@ -1057,7 +1125,7 @@ st.markdown(f"""
 # ── Toolbar row ──
 tb1, tb2, tb3, tb4 = st.columns([1, 1, 1, 1])
 with tb1:
-    refresh_clicked = st.button("Refresh Data", key="refresh_btn", use_container_width=True)
+    refresh_clicked = st.button("Refresh Data", key="refresh_btn", width="stretch")
 with tb2:
     pass
 with tb3:
@@ -1112,7 +1180,7 @@ else:
             label_visibility="collapsed",
             placeholder="Select rows…",
         )
-        if rows_to_delete and st.button("Delete Rows", key="delete_btn", type="secondary", use_container_width=True):
+        if rows_to_delete and st.button("Delete Rows", key="delete_btn", type="secondary", width="stretch"):
             st.session_state.edited_df = (
                 st.session_state.edited_df.drop(rows_to_delete).reset_index(drop=True)
             )
@@ -1139,19 +1207,19 @@ else:
             data=excel_data,
             file_name=filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            width="stretch",
         )
 
     # ── Email ──
     with tb4:
-        with st.popover("Send Email", use_container_width=True):
+        with st.popover("Send Email", width="stretch"):
             email_recipient = st.text_input(
                 "Recipient",
                 key="email_recipient",
                 placeholder="user@example.com",
                 label_visibility="collapsed",
             )
-            if st.button("Send", key="send_email_btn", use_container_width=True):
+            if st.button("Send", key="send_email_btn", width="stretch"):
                 if not email_recipient or "@" not in email_recipient:
                     st.error("Enter a valid email address.")
                 elif not get_secret("SMTP_HOST"):
