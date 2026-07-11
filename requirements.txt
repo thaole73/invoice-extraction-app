@@ -1,0 +1,8 @@
+streamlit
+pandas
+watchdog
+ollama
+openpyxl
+python-dotenv
+httpx
+supabase
